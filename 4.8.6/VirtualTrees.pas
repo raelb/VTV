@@ -702,7 +702,8 @@ type
     toFixedIndent,             // Draw the tree with a fixed indent.
     toUseExplorerTheme,        // Use the explorer theme if run under Windows Vista (or above).
     toHideTreeLinesIfThemed,   // Do not show tree lines if theming is used.
-    toShowHiddenNodes          // Draw nodes even if they are hidden.
+    toShowHiddenNodes,          // Draw nodes even if they are hidden.
+    toSkipLastColumn
   );
   TVTPaintOptions = set of TVTPaintOption;
 
@@ -3930,6 +3931,7 @@ uses
   AnsiStrings,
   {$endif UNICODE}
   StrUtils,
+  TraceTool, StackTrace,
   VTAccessibilityFactory;  // accessibility helper class
 
 resourcestring
@@ -3977,6 +3979,12 @@ var
     tymed: TYMED_ISTREAM or TYMED_HGLOBAL;
   );
 
+  _InPrepareEdit : Boolean = False;
+
+procedure SendTrace(const S: String);
+begin
+  //MainTrace.Send(S);
+end;
 
 type // streaming support
   TMagicID = array[0..5] of WideChar;
@@ -16508,6 +16516,7 @@ var
 begin
   if Assigned(Node) and (Node <> FRoot) and (Node.NodeHeight <> Value) and not (toReadOnly in FOptions.FMiscOptions) then
   begin
+    //MainTrace.SendStack('SetNodeHeight');
     Difference := Integer(Value) - Integer(Node.NodeHeight);
     Node.NodeHeight := Value;
     AdjustTotalHeight(Node, Difference, True);
@@ -20887,6 +20896,7 @@ end;
 procedure TBaseVirtualTree.DoEdit;
 
 begin
+  SendTrace('Enter.DoEdit');
   Application.CancelHint;
   StopTimer(ScrollTimer);
   StopTimer(EditTimer);
@@ -20915,6 +20925,7 @@ begin
         FEditLink := nil;
     end;
   end;
+  SendTrace('Exit.DoEdit');
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -26027,8 +26038,11 @@ var
   CurrentBidiMode: TBidiMode;
 
 begin
-  if tsEditing in FStates then
+  if (tsEditing in FStates) and Assigned(FFocusedNode) then
   begin
+    //MainTrace.SendStack('UpdateEditBounds');
+    if _InPrepareEdit then exit;
+    
     if vsMultiline in FFocusedNode.States then
       R := GetDisplayRect(FFocusedNode, FEditColumn, True, False)
     else
@@ -30897,13 +30911,17 @@ begin
                             if (poGridLines in PaintOptions) and (toShowVertGridLines in FOptions.FPaintOptions) and
                               (not (hoAutoResize in FHeader.FOptions) or (Position < TColumnPosition(Count - 1))) then
                             begin
-                              if (BidiMode = bdLeftToRight) or not ColumnIsEmpty(Node, Column) then
+                              { my option }
+                              if not ((Position = TColumnPosition(Count - 1)) and (toSkipLastColumn in FOptions.FPaintOptions)) then
                               begin
-                                Canvas.Font.Color := FColors.GridLineColor;
-                                DrawDottedVLine(PaintInfo, CellRect.Top, CellRect.Bottom, CellRect.Right - 1);
+                                if (BidiMode = bdLeftToRight) or not ColumnIsEmpty(Node, Column) then
+                                begin
+                                  Canvas.Font.Color := FColors.GridLineColor;
+                                  DrawDottedVLine(PaintInfo, CellRect.Top, CellRect.Bottom, CellRect.Right - 1);
+                                end;
+                                Dec(CellRect.Right);
+                                Dec(ContentRect.Right);
                               end;
-                              Dec(CellRect.Right);
-                              Dec(ContentRect.Right);
                             end;
                           end;
 
@@ -31072,8 +31090,12 @@ begin
                        (toShowVertGridLines in FOptions.FPaintOptions) and
                        (not (hoAutoResize in FHeader.FOptions) or (Cardinal(FirstColumn) < TColumnPosition(Count - 1))) then
                     begin
-                      DrawDottedVLine(PaintInfo, R.Top, R.Bottom, R.Right - 1);
-                      Dec(R.Right);
+                      { my option }
+                      if not ((Cardinal(FirstColumn) < TColumnPosition(Count - 1)) and (toSkipLastColumn in FOptions.FPaintOptions)) then
+                      begin
+                        DrawDottedVLine(PaintInfo, R.Top, R.Bottom, R.Right - 1);
+                        Dec(R.Right);
+                      end;
                     end;
 
                     if not (coParentColor in Items[FirstColumn].FOptions) then
@@ -33135,14 +33157,17 @@ procedure TVTEdit.CreateParams(var Params: TCreateParams);
 begin
   inherited;
 
+  //MainTrace.SendStack('CreateParams');
+  if FLink = nil then
+    SendTrace('  --FLink = nil');
   // Only with multiline style we can use the text formatting rectangle.
   // This does not harm formatting as single line control, if we don't use word wrapping.
   with Params do
   begin
     Style := Style or ES_MULTILINE;
-    if vsMultiline in FLink.FNode.States then
+    if {$IFNDEF _DEBUG}(FLink <> nil) and{$ENDIF} (vsMultiline in FLink.FNode.States) then
       Style := Style and not (ES_AUTOHSCROLL or WS_HSCROLL) or WS_VSCROLL or ES_AUTOVSCROLL;
-    if tsUseThemes in FLink.FTree.FStates then
+    if {$IFNDEF _DEBUG}(FLink <> nil) and{$ENDIF} (tsUseThemes in FLink.FTree.FStates) then
     begin
       Style := Style and not WS_BORDER;
       ExStyle := ExStyle or WS_EX_CLIENTEDGE;
@@ -33170,6 +33195,7 @@ constructor TStringEditLink.Create;
 
 begin
   inherited;
+  SendTrace('TStringEditLink.Create');
   FEdit := TVTEdit.Create(Self);
   with FEdit do
   begin
@@ -33184,6 +33210,7 @@ end;
 destructor TStringEditLink.Destroy;
 
 begin
+  SendTrace('TStringEditLink.Destroy');
   FEdit.Release;
   inherited;
 end;
@@ -33269,6 +33296,9 @@ var
   Text: UnicodeString;
 
 begin
+  SendTrace('  Enter.PrepareEdit');
+  _InPrepareEdit := True;
+
   Result := Tree is TCustomVirtualStringTree;
   if Result then
   begin
@@ -33279,8 +33309,11 @@ begin
     FTree.GetTextInfo(Node, Column, FEdit.Font, FTextBounds, Text);
     FEdit.Font.Color := clWindowText;
     FEdit.Parent := Tree;
+    SendTrace('  --RecreateWnd');
     FEdit.RecreateWnd;
+    SendTrace('  --HandleNeeded');
     FEdit.HandleNeeded;
+    SendTrace('  --After..');
     FEdit.Text := Text;
 
     if Column <= NoColumn then
@@ -33297,6 +33330,8 @@ begin
     if FEdit.BidiMode <> bdLeftToRight then
       ChangeBidiModeAlignment(FAlignment);
   end;
+  _InPrepareEdit := False;
+  SendTrace('  Exit.PrepareEdit');
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
