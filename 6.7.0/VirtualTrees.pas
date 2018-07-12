@@ -453,7 +453,8 @@ type
     toFixedIndent,             // Draw the tree with a fixed indent.
     toUseExplorerTheme,        // Use the explorer theme if run under Windows Vista (or above).
     toHideTreeLinesIfThemed,   // Do not show tree lines if theming is used.
-    toShowFilteredNodes        // Draw nodes even if they are filtered out.
+    toShowFilteredNodes,       // Draw nodes even if they are filtered out.
+    toSkipLastColumn
   );
   TVTPaintOptions = set of TVTPaintOption;
 
@@ -2306,8 +2307,6 @@ type
     FOnStartOperation: TVTOperationEvent;        // Called when an operation starts
     FOnEndOperation: TVTOperationEvent;          // Called when an operation ends
 
-    FVclStyleEnabled: Boolean;
-
     procedure CMStyleChanged(var Message: TMessage); message CM_STYLECHANGED;
     procedure CMParentDoubleBufferedChange(var Message: TMessage); message CM_PARENTDOUBLEBUFFEREDCHANGED;
 
@@ -2481,9 +2480,11 @@ type
     procedure WMVScroll(var Message: TWMVScroll); message WM_VSCROLL;
     function GetRangeX: Cardinal;
     function GetDoubleBuffered: Boolean;
+    function GetVclStyleEnabled: Boolean;
     procedure SetDoubleBuffered(const Value: Boolean);
 
   protected
+    FVclStyleEnabled: Boolean;
     FFontChanged: Boolean;                       // flag for keeping informed about font changes in the off screen buffer   // [IPK] - private to protected
     procedure AutoScale(isDpiChange: Boolean); virtual;
     procedure AddToSelection(Node: PVirtualNode); overload; virtual;
@@ -2744,7 +2745,7 @@ type
     procedure WriteNode(Stream: TStream; Node: PVirtualNode); virtual;
 
     procedure VclStyleChanged; virtual;
-    property VclStyleEnabled: Boolean read FVclStyleEnabled;
+    property VclStyleEnabled: Boolean read GetVclStyleEnabled;
     property TotalInternalDataSize: Cardinal read FTotalInternalDataSize;
 
     property Alignment: TAlignment read FAlignment write SetAlignment default taLeftJustify;
@@ -3981,7 +3982,7 @@ uses
   VirtualTrees.ClipBoard,
   VirtualTrees.Utils, 
   VirtualTrees.Export,
-  VTHeaderPopup;
+  VTHeaderPopup, VTHelper;
 
 resourcestring
   // Localizable strings.
@@ -4018,6 +4019,8 @@ var
     // Acceptable storage formats are IStream and global memory. The first is preferred.
     tymed: TYMED_ISTREAM or TYMED_HGLOBAL;
   );
+
+  _InPrepareEdit : Boolean = False;
 
 type
   // protection against TRect record method that cause problems with with-statements
@@ -14184,7 +14187,7 @@ begin
                   FillBitmap(FHotMinusBM);
                   FillBitmap(FSelectedHotMinusBM);
                   // Weil die selbstgezeichneten Bitmaps sehen im Vcl Style scheiﬂe aus
-                  // Because the self-drawn bitmaps view Vcl Style shit
+                  // Because the self-drawn bitmaps view Vcl Style
                   if Theme = 0 then
                   begin
                     if not(tsUseExplorerTheme in FStates) then
@@ -23826,6 +23829,7 @@ var
 
 begin
   inherited;
+  AdjustTreeProperties(Self);
 
   // Call RegisterDragDrop after all visual inheritance changes to MiscOptions have been applied.
   if not (csDesigning in ComponentState) and (toAcceptOLEDrop in FOptions.FMiscOptions) then
@@ -25680,6 +25684,8 @@ begin
   if (tsEditing in FStates) and Assigned(FFocusedNode) and
      (FEditColumn < FHeader.Columns.Count) then // prevent EArgumentOutOfRangeException
   begin
+    if _InPrepareEdit then exit;
+
     if (GetCurrentThreadId <> MainThreadID) then
     begin
       // UpdateEditBounds() will be called at the end of the thread
@@ -31007,19 +31013,22 @@ begin
                                 // TBaseVirtualTree.Paint (i.e. for fixed columns and other columns.
                                 // CellIsTouchingClientRight does not work for fixed columns.)
                                 // we have to paint fixed column grid line anyway.
-                                if not CellIsTouchingClientRight or ColumnIsFixed then
+                                if not CellIsInLastColumn and (toSkipLastColumn in FOptions.FPaintOptions) then // MOD_RB
                                 begin
-                                  if (BidiMode = bdLeftToRight) or not ColumnIsEmpty(Node, Column) then
+                                  if not CellIsTouchingClientRight or ColumnIsFixed then
                                   begin
-                                    Canvas.Font.Color := FColors.GridLineColor;
-                                    lUseSelectedBkColor := (poDrawSelection in PaintOptions) and (toFullRowSelect in FOptions.FSelectionOptions) and
-                                                          (vsSelected in Node.States) and not (toUseBlendedSelection in FOptions.PaintOptions) and not
-                                                          (tsUseExplorerTheme in FStates);
-                                    DrawDottedVLine(PaintInfo, CellRect.Top, CellRect.Bottom, CellRect.Right - 1, lUseSelectedBkColor);
-                                  end;
+                                    if (BidiMode = bdLeftToRight) or not ColumnIsEmpty(Node, Column) then
+                                    begin
+                                      Canvas.Font.Color := FColors.GridLineColor;
+                                      lUseSelectedBkColor := (poDrawSelection in PaintOptions) and (toFullRowSelect in FOptions.FSelectionOptions) and
+                                                            (vsSelected in Node.States) and not (toUseBlendedSelection in FOptions.PaintOptions) and not
+                                                            (tsUseExplorerTheme in FStates);
+                                      DrawDottedVLine(PaintInfo, CellRect.Top, CellRect.Bottom, CellRect.Right - 1, lUseSelectedBkColor);
+                                    end;
 
-                                  Dec(CellRect.Right);
-                                  Dec(ContentRect.Right);
+                                    Dec(CellRect.Right);
+                                    Dec(ContentRect.Right);
+                                  end;
                                 end;
                               end;
                             end;
@@ -31208,8 +31217,11 @@ begin
                          (toShowVertGridLines in FOptions.FPaintOptions) and
                          (not (hoAutoResize in FHeader.FOptions) or (Cardinal(FirstColumn) < TColumnPosition(Count - 1))) then
                       begin
-                        DrawDottedVLine(PaintInfo, R.Top, R.Bottom, R.Right - 1);
-                        Dec(R.Right);
+                        if not ((Cardinal(FirstColumn) < TColumnPosition(Count - 1)) and (toSkipLastColumn in FOptions.FPaintOptions)) then
+                        begin
+                          DrawDottedVLine(PaintInfo, R.Top, R.Bottom, R.Right - 1);
+                          Dec(R.Right);
+                        end;
                       end;
 
                       if not (coParentColor in Items[FirstColumn].FOptions) then
@@ -31655,6 +31667,12 @@ function TBaseVirtualTree.GetDefaultHintKind: TVTHintKind;
 
 begin
   Result := vhkText;
+end;
+
+function TBaseVirtualTree.GetVclStyleEnabled: Boolean;
+begin
+  Result := FVclStyleEnabled;
+  //Result := False;
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -33374,7 +33392,9 @@ var
   Size: TSize;
   LastFont: THandle;
 
-begin
+begin  // MOD_RB
+  if (FLink = nil) or (FLink.FNode = nil) or (FLink.FTree = nil) then exit;
+
   if not (vsMultiline in FLink.FNode.States) and not (toGridExtensions in FLink.FTree.FOptions.FMiscOptions{see issue #252}) then
   begin
     // avoid flicker
@@ -33547,6 +33567,8 @@ var
   Text: string;
 
 begin
+  _InPrepareEdit := True;
+
   Result := Tree is TCustomVirtualStringTree;
   if Result then
   begin
@@ -33582,6 +33604,8 @@ begin
     if FEdit.BidiMode <> bdLeftToRight then
       ChangeBidiModeAlignment(FAlignment);
   end;
+
+  _InPrepareEdit := False;
 end;
 
 //----------------------------------------------------------------------------------------------------------------------
@@ -33856,6 +33880,7 @@ begin
     Canvas.TextFlags := 0;
     InflateRect(R, -FTextMargin, 0);
 
+    AdjustCanvas(Self, Node, Canvas);
     // Multiline nodes don't need special font handling or text manipulation.
     // Note: multiline support requires the Unicode version of DrawText, which is able to do word breaking.
     //       The emulation in this unit does not support this so we have to use the OS version. However
