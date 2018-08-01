@@ -1350,8 +1350,9 @@ type
 
     function AllowFocus(ColumnIndex: TColumnIndex): Boolean;
     procedure Assign(Source: TPersistent); override;
-    procedure AutoFitColumns(Animated: Boolean = True; SmartAutoFitType: TSmartAutoFitType = smaUseColumnOption;
-      RangeStartCol: Integer = NoColumn; RangeEndCol: Integer = NoColumn); virtual;
+    procedure AutoFitColumns(Animated: Boolean = True; SmartAutoFitType:
+        TSmartAutoFitType = smaUseColumnOption; RangeStartCol: Integer = NoColumn;
+        RangeEndCol: Integer = NoColumn; OnlyCurrentNode: Boolean = False); virtual;
     function InHeader(P: TPoint): Boolean; virtual;
     function InHeaderSplitterArea(P: TPoint): Boolean; virtual;
     procedure Invalidate(Column: TVirtualTreeColumn; ExpandToBorder: Boolean = False);
@@ -3022,7 +3023,8 @@ type
     function GetLastVisibleChildNoInit(Node: PVirtualNode; IncludeFiltered: Boolean = False): PVirtualNode;
     function GetLastVisibleNoInit(Node: PVirtualNode = nil; ConsiderChildrenAbove: Boolean = True;
       IncludeFiltered: Boolean = False): PVirtualNode;
-    function GetMaxColumnWidth(Column: TColumnIndex; UseSmartColumnWidth: Boolean = False): Integer; virtual;
+    function GetMaxColumnWidth(Column: TColumnIndex; UseSmartColumnWidth: Boolean =
+        False; OnlyCurrentNode: Boolean = False): Integer; virtual;
     function GetNext(Node: PVirtualNode; ConsiderChildrenAbove: Boolean = False): PVirtualNode;
     function GetNextChecked(Node: PVirtualNode; State: TCheckState = csCheckedNormal;
       ConsiderChildrenAbove: Boolean = False): PVirtualNode; overload;
@@ -11323,8 +11325,9 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
-procedure TVTHeader.AutoFitColumns(Animated: Boolean = True; SmartAutoFitType: TSmartAutoFitType = smaUseColumnOption;
-  RangeStartCol: Integer = NoColumn; RangeEndCol: Integer = NoColumn);
+procedure TVTHeader.AutoFitColumns(Animated: Boolean = True; SmartAutoFitType:
+    TSmartAutoFitType = smaUseColumnOption; RangeStartCol: Integer = NoColumn;
+    RangeEndCol: Integer = NoColumn; OnlyCurrentNode: Boolean = False);
 
   //--------------- local functions -------------------------------------------
 
@@ -11352,10 +11355,10 @@ procedure TVTHeader.AutoFitColumns(Animated: Boolean = True; SmartAutoFitType: T
       begin
         if Animated then
           AnimatedResize(FPositionToIndex[Column], Treeview.GetMaxColumnWidth(FPositionToIndex[Column],
-            GetUseSmartColumnWidth(FPositionToIndex[Column])))
+            GetUseSmartColumnWidth(FPositionToIndex[Column]), OnlyCurrentNode))
         else
           FColumns[FPositionToIndex[Column]].Width := Treeview.GetMaxColumnWidth(FPositionToIndex[Column],
-            GetUseSmartColumnWidth(FPositionToIndex[Column]));
+            GetUseSmartColumnWidth(FPositionToIndex[Column]), OnlyCurrentNode);
 
         DoAfterAutoFitColumn(FPositionToIndex[Column]);
       end;
@@ -28164,7 +28167,9 @@ end;
 
 //----------------------------------------------------------------------------------------------------------------------
 
-function TBaseVirtualTree.GetMaxColumnWidth(Column: TColumnIndex; UseSmartColumnWidth: Boolean = False): Integer;
+function TBaseVirtualTree.GetMaxColumnWidth(Column: TColumnIndex;
+    UseSmartColumnWidth: Boolean = False; OnlyCurrentNode: Boolean = False):
+    Integer;
 
 // This method determines the width of the largest node in the given column.
 // If UseSmartColumnWidth is True then only the visible nodes which are in view will be considered
@@ -28190,7 +28195,11 @@ begin
     Exit;
   end
   else
+  begin
     Result := 0;
+    if OnlyCurrentNode then
+      Result := FHeader.FColumns[Column].Width;
+  end;
 
   StartOperation(okGetMaxColumnWidth);
   try
@@ -28203,10 +28212,15 @@ begin
     else
       CheckOffset := 0;
 
-    if UseSmartColumnWidth then // Get first visible node which is in view.
-      Run := GetTopNode
+    if OnlyCurrentNode then
+      Run := Self.FocusedNode
     else
-      Run := GetFirstVisible(nil, True);
+    begin
+      if UseSmartColumnWidth then // Get first visible node which is in view.
+        Run := GetTopNode
+      else
+        Run := GetFirstVisible(nil, True);
+    end;
 
     if Column = FHeader.MainColumn then
     begin
@@ -28269,6 +28283,9 @@ begin
       NextNode := GetNextVisible(Run, True);
       if NextNode = LastNode then
         Break;
+      if OnlyCurrentNode then
+        Break;
+
       if (Column = Header.MainColumn) and not (toFixedIndent in FOptions.FPaintOptions) then
         Inc(NodeLeft, CountLevelDifference(Run, NextNode) * Integer(FIndent));
       Run := NextNode;
